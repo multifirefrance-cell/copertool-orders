@@ -223,19 +223,63 @@ label.f input, label.f textarea, #copyBox { padding: 9px 10px; border: 1px solid
   }
   /*@ADAPTER*/
   var CFG = window.COPERTOOL_CONFIG || {};
-  var ORDER_ID = (function () {
-    try { var v = localStorage.getItem('copertool-order-id'); if (v) return v; } catch (e) { }
-    var a = new Uint8Array(12); (window.crypto || window.msCrypto).getRandomValues(a);
-    var id = 'o' + Array.prototype.map.call(a, function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
-    try { localStorage.setItem('copertool-order-id', id); } catch (e) { }
-    return id;
-  })();
+  var ID_KEY = 'copertool-order-id';
+  // readable order number, e.g. COP-20261024-1532-K7Q (date + time of the first item + 3 random characters)
+  function makeNo() {
+    var d = new Date(), p = function (n) { return ('0' + n).slice(-2); };
+    var a = new Uint8Array(3); (window.crypto || window.msCrypto).getRandomValues(a);
+    var al = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    var r = Array.prototype.map.call(a, function (b) { return al.charAt(b % al.length); }).join('');
+    return 'COP-' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + '-' + r;
+  }
+  function getOrderId(create) {
+    var v = null;
+    try { v = localStorage.getItem(ID_KEY); } catch (e) { }
+    if (v || !create) return v;
+    v = makeNo();
+    try { localStorage.setItem(ID_KEY, v); } catch (e) { }
+    return v;
+  }
   function remoteReady() { return !!CFG.endpoint; }
-  async function remoteSave(doc) {
-    var body = JSON.stringify({ token: CFG.token || '', orderId: ORDER_ID, client: doc.client, note: doc.note, items: doc.items, lines: doc.lines, totals: doc.totals, updatedAt: doc.updatedAt });
+  async function post(doc, id, status) {
+    var body = JSON.stringify({ token: CFG.token || '', orderId: id, status: status, client: doc.client, note: doc.note, items: doc.items, lines: doc.lines, totals: doc.totals, updatedAt: doc.updatedAt });
     var r = await fetch(CFG.endpoint, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body });
     var j = await r.json();
     if (!j || !j.ok) { var err = new Error((j && j.error) || 'rejected'); err.code = 'server'; throw err; }
+  }
+  async function remoteSave(doc) {
+    if (!doc.lines && !getOrderId(false)) return;   // nothing to save yet: no number is created for an empty order
+    await post(doc, getOrderId(true), 'draft');
+  }
+  /* Send order: closes the current order (status "sent") and starts a new empty one */
+  var sending = false;
+  async function sendOrder(btn) {
+    if (sending) return;
+    if (!S.order.size) { toast('Your order is empty.'); return; }
+    if (!confirmTimers.send) {
+      btn.textContent = 'Click again to send';
+      confirmTimers.send = setTimeout(function () { confirmTimers.send = null; if (btn.isConnected) btn.textContent = 'Send order'; }, 4000);
+      return;
+    }
+    clearTimeout(confirmTimers.send); confirmTimers.send = null;
+    sending = true; btn.disabled = true; btn.textContent = 'Sending…';
+    clearTimeout(timer);
+    for (var w = 0; saving && w < 40; w++) await new Promise(function (r) { setTimeout(r, 250); });
+    var doc = docNow(), id = getOrderId(true);
+    try { await post(doc, id, 'sent'); }
+    catch (e) { sending = false; btn.disabled = false; btn.textContent = 'Send order'; toast('Could not send the order. Check your connection and try again.'); return; }
+    S.sentInfo = { no: id, doc: Object.assign({ no: id }, doc) };
+    try { localStorage.removeItem(ID_KEY); } catch (e) { }
+    S.order = new Map(); S.note = ''; lsSet(docNow());
+    $('orderCount').textContent = 0;
+    var st = $('saveStatus'); st.className = 'status ok'; st.textContent = 'Order ' + id + ' sent';
+    sending = false; render(); try { window.scrollTo(0, 0); } catch (e) { }
+  }
+  function sentPanel() {
+    var i = S.sentInfo;
+    return '<h2>Order sent</h2><div class="panel"><p style="margin:0 0 6px;font-size:16px"><b>Thank you — your order has been sent.</b></p>' +
+      '<p class="hint" style="margin:0 0 12px">Order number: <b>' + esc(i.no) + '</b>. Please keep this number for reference.</p>' +
+      '<div class="actions"><button class="btn primary" data-act="dlsent">Download Excel</button><button class="btn" data-act="newop">Start a new order</button></div></div>';
   }
   async function saveFile(filename, data) {
     var url = URL.createObjectURL(data), a = document.createElement('a');
@@ -248,6 +292,7 @@ label.f input, label.f textarea, #copyBox { padding: 9px 10px; border: 1px solid
   }
   /*@/ADAPTER*/
   function setQty(id, val) {
+    S.sentInfo = null;
     var n = parseFloat(val);
     if (!isFinite(n) || n <= 0) S.order.delete(id); else S.order.set(id, { q: Math.min(Math.round(n * 1000) / 1000, 99999999) });
     $('orderCount').textContent = S.order.size; scheduleSave();
@@ -325,6 +370,7 @@ label.f input, label.f textarea, #copyBox { padding: 9px 10px; border: 1px solid
     var head = '<h2>My order</h2><p class="hint" id="sendHint">' + esc(sendHint()) + '</p>' +
       '<div class="panel"><div class="fields"><label class="f" for="clientName">Your name or company<input id="clientName" type="text" maxlength="120" value="' + esc(S.client) + '" autocomplete="organization"></label>' +
       '<label class="f" for="clientNote">Notes for this order<textarea id="clientNote" rows="2" maxlength="1000">' + esc(S.note) + '</textarea></label></div></div>';
+    if (!its.length && S.sentInfo) return sentPanel();
     if (!its.length) return head + '<div class="panel empty">Your order is empty. Open a category or use the search box, then type a quantity next to each product.<div class="actions" style="justify-content:center"><button class="btn primary" data-act="home">Browse categories</button></div></div>';
     var body = '', last = '';
     its.forEach(function (x) {
@@ -334,7 +380,7 @@ label.f input, label.f textarea, #copyBox { padding: 9px 10px; border: 1px solid
     });
     body += '</ul>';
     return head + '<div class="panel"><div class="oh"><div><span class="sum" id="orderTotals"></span></div><div class="actions">' +
-      (caps.dl ? '<button class="btn primary" data-act="dl">Download Excel</button>' : '') +
+      '<button class="btn primary" data-act="send" id="sendBtn">Send order</button>' + (caps.dl ? '<button class="btn" data-act="dl">Download Excel</button>' : '') +
       '<button class="btn" data-act="copy">Copy order text</button><button class="btn quiet" data-act="clear" id="clearBtn">Clear order</button></div></div>' +
       '<div id="copyWrap" hidden><p class="hint">Select all and copy:</p><textarea id="copyBox" rows="8" readonly aria-label="Order text"></textarea></div></div>' + body;
   }
@@ -406,7 +452,7 @@ label.f input, label.f textarea, #copyBox { padding: 9px 10px; border: 1px solid
     return rows.join('\r\n');
   }
   function buildXlsx(doc) {
-    var aoa = [['COPERTOOL order list'], ['Client', doc.client || ''], ['Date', new Date(doc.updatedAt).toLocaleString()], ['Note', doc.note || ''], [], ['No.', 'Category', 'Type', 'Product', 'UOM', 'Quantity']];
+    var aoa = [['COPERTOOL order list'], ['Order no.', doc.no || ''], ['Client', doc.client || ''], ['Date', new Date(doc.updatedAt).toLocaleString()], ['Note', doc.note || ''], [], ['No.', 'Category', 'Type', 'Product', 'UOM', 'Quantity']];
     doc.items.forEach(function (it, i) { aoa.push([i + 1, it.c, it.t, it.n, it.u || '', it.q]); });
     var ws = XLSX.utils.aoa_to_sheet(aoa);
     ws['!cols'] = [{ wch: 6 }, { wch: 22 }, { wch: 30 }, { wch: 64 }, { wch: 7 }, { wch: 10 }];
@@ -465,6 +511,9 @@ label.f input, label.f textarea, #copyBox { padding: 9px 10px; border: 1px solid
         clearTimeout(confirmTimers.clear); confirmTimers.clear = null; S.order = new Map(); $('orderCount').textContent = 0; scheduleSave(); render();
       }
     }
+    else if (a === 'send') { await sendOrder(b); }
+    else if (a === 'newop') { S.sentInfo = null; go('home', { ci: null, ti: null, filter: '', onlySel: false }); }
+    else if (a === 'dlsent') { if (S.sentInfo) download(S.sentInfo.doc, S.sentInfo.no); }
     else if (a === 'otoggle') { ownerOpen[d.id] = !ownerOpen[d.id]; render(); }
     else if (a === 'odl') { var o = ownerOrders.filter(function (x) { return x.id === d.id; })[0]; if (o) download({ client: o.client, note: o.note, items: o.items || [], lines: o.lines, totals: o.totals, updatedAt: o.updatedAt }, o.client || o.acct || 'client'); }
     else if (a === 'odel') {
@@ -502,7 +551,7 @@ label.f input, label.f textarea, #copyBox { padding: 9px 10px; border: 1px solid
   }
 
   /* ---------- login screen ---------- */
-  var AUTH = { salt: "2e1855f475f4a7090cdfefd4445e21c5", iter: 150000, hash: "d10808c2d3f95e8112cdb97c1e3e963bf10bb9adf1d3f57250560c8abe507031" };
+  var AUTH = { salt: "541d8e7f87f3a6a22fd1f1558154112c", iter: 150000, hash: "3672c4b8a8a740a844562a9ed4bdf3d018217f9c3acaf57c3480ba6842bf11ea" };
   function toHex(buf) { return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ('0' + b.toString(16)).slice(-2); }).join(''); }
   function fromHex(h) { var a = new Uint8Array(h.length / 2); for (var i = 0; i < a.length; i++) a[i] = parseInt(h.substr(i * 2, 2), 16); return a; }
   async function derive(user, pw) {
