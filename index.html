@@ -502,11 +502,11 @@ label.f input, label.f textarea, #copyBox { padding: 9px 10px; border: 1px solid
   }
 
   /* ---------- login screen ---------- */
-  var AUTH = { salt: "dacc0f6bdbadbabcd645086f14fed386", iter: 150000, hash: "1a30e1ed6560a28fd13bdca29b179bc58f81dea3bccaa8e781813ab42e844888" };
+  var AUTH = { salt: "2e1855f475f4a7090cdfefd4445e21c5", iter: 150000, hash: "d10808c2d3f95e8112cdb97c1e3e963bf10bb9adf1d3f57250560c8abe507031" };
   function toHex(buf) { return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ('0' + b.toString(16)).slice(-2); }).join(''); }
   function fromHex(h) { var a = new Uint8Array(h.length / 2); for (var i = 0; i < a.length; i++) a[i] = parseInt(h.substr(i * 2, 2), 16); return a; }
   async function derive(user, pw) {
-    var key = await crypto.subtle.importKey('raw', new TextEncoder().encode(user.trim().toLowerCase() + '\n' + pw), 'PBKDF2', false, ['deriveBits']);
+    var key = await crypto.subtle.importKey('raw', new TextEncoder().encode(user.trim() + '\n' + pw), 'PBKDF2', false, ['deriveBits']);
     var bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: fromHex(AUTH.salt), iterations: AUTH.iter }, key, 256);
     return toHex(bits);
   }
